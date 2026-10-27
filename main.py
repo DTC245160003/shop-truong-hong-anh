@@ -3940,6 +3940,132 @@ def _chunk_text(text: str, target_words: int = RAG_CHUNK_TARGET_WORDS,
     return chunks
 
 
+# ===================== GLOBAL_DATE_TIME (chỉ thêm cho chatbot) =====================
+# Tính trực tiếp từ đồng hồ server UTC + cơ sở dữ liệu múi giờ IANA.
+# Không dùng Tavily/Gemini; tuyệt đối không ảnh hưởng SHOP_RAG và WEB_SEARCH.
+def _ha_time_normalize(value: str) -> str:
+    import unicodedata
+    value = unicodedata.normalize("NFD", value.casefold().replace("đ", "d"))
+    return " ".join("".join(c for c in value if unicodedata.category(c) != "Mn").split())
+
+
+def _ha_current_time_intent(question: str) -> bool:
+    import re
+    q = _ha_time_normalize(question)
+    # Tránh nuốt câu hỏi thời sự "ngày bầu", "ngày ra mắt", "giờ mở cửa".
+    patterns = (
+        r"\b(hom nay|ngay hom nay)\b.{0,42}\b(ngay|thu|may|bao nhieu|la ngay|la thu)\b",
+        r"\b(bay gio|luc nay|gio nay)\b.{0,65}\b(may gio|gio|ngay|thu|bao nhieu)\b",
+        r"\b(may gio|gio may|ngay bao nhieu|hom nay thu may|hom nay ngay may)\b",
+        r"\b(hien tai|luc nay)\b.{0,48}\b(may gio|gio may|gio la|ngay may|ngay bao nhieu|thu may)\b",
+        r"\b(what time is it|what is the date today|current time|today.s date)\b",
+        r"\b(thu may|ngay may|may gio)\b.{0,55}\b(hom nay|bay gio|hien tai)\b",
+        r"\b(thoi gian hien tai)\b",
+    )
+    if not any(re.search(p, q) for p in patterns):
+        return False
+    # Chỉ bắt câu ngày/giờ thực tế, không bắt câu "hôm nay giá iPhone bao nhiêu?".
+    if any(k in q for k in ("san pham", "gia iphone", "gia samsung", "shop", "cua hang", "gia bao nhieu")):
+        return False
+    return True
+
+
+def _ha_time_locations(question: str):
+    import re
+    q = _ha_time_normalize(question)
+    # Mã IANA được phép truyền trực tiếp, ví dụ Europe/Paris.
+    iana = re.search(r"\b(?:Africa|America|Antarctica|Asia|Atlantic|Australia|Europe|Indian|Pacific)/[A-Za-z_]+\b", question)
+    if iana:
+        return [(iana.group(0), iana.group(0))]
+
+    locations = {
+        "viet nam": "Asia/Ho_Chi_Minh", "vietnam": "Asia/Ho_Chi_Minh", "ha noi": "Asia/Ho_Chi_Minh", "hanoi": "Asia/Ho_Chi_Minh", "sai gon": "Asia/Ho_Chi_Minh", "ho chi minh": "Asia/Ho_Chi_Minh",
+        "nhat ban": "Asia/Tokyo", "japan": "Asia/Tokyo", "tokyo": "Asia/Tokyo", "osaka": "Asia/Tokyo",
+        "han quoc": "Asia/Seoul", "korea": "Asia/Seoul", "seoul": "Asia/Seoul",
+        "trung quoc": "Asia/Shanghai", "china": "Asia/Shanghai", "bac kinh": "Asia/Shanghai", "beijing": "Asia/Shanghai", "thuong hai": "Asia/Shanghai",
+        "dai loan": "Asia/Taipei", "taiwan": "Asia/Taipei", "hong kong": "Asia/Hong_Kong",
+        "singapore": "Asia/Singapore", "thai lan": "Asia/Bangkok", "thailand": "Asia/Bangkok", "bangkok": "Asia/Bangkok",
+        "lao": "Asia/Vientiane", "campuchia": "Asia/Phnom_Penh", "cambodia": "Asia/Phnom_Penh",
+        "indonesia": "Asia/Jakarta", "jakarta": "Asia/Jakarta", "malaysia": "Asia/Kuala_Lumpur", "philippines": "Asia/Manila", "philippin": "Asia/Manila", "manila": "Asia/Manila",
+        "an do": "Asia/Kolkata", "india": "Asia/Kolkata", "new delhi": "Asia/Kolkata", "mumbai": "Asia/Kolkata", "nepal": "Asia/Kathmandu", "pakistan": "Asia/Karachi",
+        "anh": "Europe/London", "vuong quoc anh": "Europe/London", "united kingdom": "Europe/London", "uk": "Europe/London", "london": "Europe/London",
+        "phap": "Europe/Paris", "france": "Europe/Paris", "paris": "Europe/Paris", "duc": "Europe/Berlin", "germany": "Europe/Berlin", "berlin": "Europe/Berlin",
+        "y": "Europe/Rome", "italy": "Europe/Rome", "rome": "Europe/Rome", "tay ban nha": "Europe/Madrid", "spain": "Europe/Madrid", "madrid": "Europe/Madrid",
+        "nga": "Europe/Moscow", "moscow": "Europe/Moscow", "moskva": "Europe/Moscow", "ukraine": "Europe/Kyiv", "kyiv": "Europe/Kyiv",
+        "thuy si": "Europe/Zurich", "switzerland": "Europe/Zurich", "ha lan": "Europe/Amsterdam", "netherlands": "Europe/Amsterdam",
+        "dubai": "Asia/Dubai", "uae": "Asia/Dubai", "a rap xe ut": "Asia/Riyadh", "saudi arabia": "Asia/Riyadh", "israel": "Asia/Jerusalem", "tho nhi ky": "Europe/Istanbul", "turkey": "Europe/Istanbul",
+        "new york": "America/New_York", "washington dc": "America/New_York", "washington d.c.": "America/New_York", "boston": "America/New_York", "miami": "America/New_York",
+        "los angeles": "America/Los_Angeles", "california": "America/Los_Angeles", "san francisco": "America/Los_Angeles", "las vegas": "America/Los_Angeles", "seattle": "America/Los_Angeles",
+        "chicago": "America/Chicago", "texas": "America/Chicago", "dallas": "America/Chicago", "houston": "America/Chicago", "denver": "America/Denver", "phoenix": "America/Phoenix", "alaska": "America/Anchorage", "hawaii": "Pacific/Honolulu",
+        "toronto": "America/Toronto", "montreal": "America/Toronto", "vancouver": "America/Vancouver", "ottawa": "America/Toronto",
+        "sydney": "Australia/Sydney", "melbourne": "Australia/Melbourne", "brisbane": "Australia/Brisbane", "perth": "Australia/Perth", "canberra": "Australia/Sydney",
+        "new zealand": "Pacific/Auckland", "auckland": "Pacific/Auckland", "wellington": "Pacific/Auckland",
+        "brazil": "America/Sao_Paulo", "sao paulo": "America/Sao_Paulo", "rio de janeiro": "America/Sao_Paulo",
+        "argentina": "America/Argentina/Buenos_Aires", "buenos aires": "America/Argentina/Buenos_Aires",
+        "nam phi": "Africa/Johannesburg", "south africa": "Africa/Johannesburg", "johannesburg": "Africa/Johannesburg", "cairo": "Africa/Cairo", "ai cap": "Africa/Cairo", "egypt": "Africa/Cairo",
+    }
+    # Các quốc gia có nhiều múi giờ: không áp một múi giờ chung gây sai lệch.
+    multi = {
+        "my": [("New York (miền Đông)", "America/New_York"), ("Chicago (miền Trung)", "America/Chicago"), ("Denver (miền Núi)", "America/Denver"), ("Los Angeles (miền Tây)", "America/Los_Angeles")],
+        "hoa ky": [("New York (miền Đông)", "America/New_York"), ("Chicago (miền Trung)", "America/Chicago"), ("Denver (miền Núi)", "America/Denver"), ("Los Angeles (miền Tây)", "America/Los_Angeles")],
+        "nuoc my": [("New York (miền Đông)", "America/New_York"), ("Chicago (miền Trung)", "America/Chicago"), ("Los Angeles (miền Tây)", "America/Los_Angeles")],
+        "usa": [("New York", "America/New_York"), ("Los Angeles", "America/Los_Angeles")],
+        "united states": [("New York", "America/New_York"), ("Los Angeles", "America/Los_Angeles")],
+        "canada": [("Toronto", "America/Toronto"), ("Vancouver", "America/Vancouver")],
+        "uc": [("Sydney", "Australia/Sydney"), ("Brisbane", "Australia/Brisbane"), ("Perth", "Australia/Perth")],
+        "australia": [("Sydney", "Australia/Sydney"), ("Brisbane", "Australia/Brisbane"), ("Perth", "Australia/Perth")],
+    }
+    found = [(key, val) for key, val in locations.items() if re.search(r"(?<!\w)" + re.escape(key) + r"(?!\w)", q)]
+    # Nếu có thành phố cụ thể, ưu tiên thành phố thay vì một danh sách quốc gia.
+    if found:
+        key, zone = max(found, key=lambda x: len(x[0]))
+        return [(key.title(), zone)]
+    for key, zones in multi.items():
+        if re.search(r"(?<!\w)" + re.escape(key) + r"(?!\w)", q):
+            return zones
+
+    # Thử tên nước tiếng Anh chuẩn ISO 3166, không cần liệt kê toàn bộ quốc gia.
+    # Thư viện tùy chọn; không ảnh hưởng khởi động ứng dụng khi chưa cài.
+    tail = re.search(r"\b(?:o|tai|ben|cua|nuoc)\s+([a-z][a-z .'-]{1,55})", q)
+    if tail:
+        place = re.split(r"[?!,.]", tail.group(1))[0].strip()
+        place = re.sub(r"\s+(?:bay gio|hom nay|la|thi|may gio|ngay bao nhieu|luc nay).*$", "", place).strip()
+        try:
+            import pycountry, pytz
+            country = pycountry.countries.lookup(place)
+            zones = pytz.country_timezones.get(country.alpha_2, [])
+            if zones:
+                return [(z.rsplit('/', 1)[-1].replace('_', ' '), z) for z in zones[:5]]
+        except (ImportError, LookupError, AttributeError, KeyError):
+            pass
+        # Không đoán bừa địa điểm không nhận ra.
+        return None
+    return [("Việt Nam", "Asia/Ho_Chi_Minh")]
+
+
+def _ha_global_datetime_answer(question: str):
+    if not _ha_current_time_intent(question):
+        return None
+    places = _ha_time_locations(question)
+    if not places:
+        return "Mình chưa xác định chắc chắn múi giờ của địa điểm bạn hỏi. Bạn cho mình tên thành phố hoặc múi giờ (ví dụ: Tokyo, New York, Europe/Paris) nhé."
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    utc_now = datetime.now(timezone.utc)
+    weekdays = ("Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật")
+    lines = []
+    for label, tz_name in places:
+        try:
+            local = utc_now.astimezone(ZoneInfo(tz_name))
+        except ZoneInfoNotFoundError:
+            return "Máy chủ chưa có dữ liệu múi giờ phù hợp. Hãy cài gói tzdata để hỗ trợ đầy đủ."
+        offset = local.strftime('%z')
+        utc_label = f"UTC{offset[:3]}:{offset[3:]}" if offset else 'UTC'
+        lines.append(f"**{label}:** {local:%H:%M:%S}, {weekdays[local.weekday()]}, ngày {local:%d/%m/%Y} ({utc_label}).")
+    preface = "Giờ hiện tại theo múi giờ địa phương:\n" if len(lines) > 1 else ""
+    return preface + "\n".join(lines)
+
+
 # ── Endpoint 1: POST /api/rag-chat ───────────────────────────────────────────
 @app.post("/api/rag-chat", response_model=RagChatResponse)
 async def rag_chat(req: RagChatRequest, db: Session = Depends(get_db)):
@@ -3951,6 +4077,12 @@ async def rag_chat(req: RagChatRequest, db: Session = Depends(get_db)):
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Câu hỏi không được để trống")
+
+    # Câu hỏi ngày/giờ thực tế xử lý độc lập; những nhánh cũ giữ nguyên.
+    _time_answer = _ha_global_datetime_answer(question)
+    if _time_answer is not None:
+        print(f"[RAG Router] route=GLOBAL_DATE_TIME | q={question[:120]}")
+        return RagChatResponse(answer=_time_answer, sources=[], products=[])
 
     is_shop_query = _is_shop_query(question)
     print(f"[RAG Router] route={'SHOP_RAG' if is_shop_query else 'WEB_SEARCH'} | q={question[:120]}")
