@@ -30821,6 +30821,14 @@ i[class^="hai-"], i[class*=" hai-"] {
     40%           { transform: scale(1.2); opacity: 1;   }
 }
 
+/* Định dạng văn bản HongAnh+RAG: chỉ thay hiển thị câu trả lời. */
+.rag-bubble .rag-answer-line { margin: 3px 0; overflow-wrap: anywhere; }
+.rag-bubble .rag-answer-heading { font-weight: 750; margin: 10px 0 5px; line-height: 1.4; }
+.rag-bubble .rag-answer-list { padding-left: 12px; text-indent: -12px; margin: 5px 0; line-height: 1.55; overflow-wrap: anywhere; }
+.rag-bubble .rag-answer-space { height: 8px; }
+.rag-bubble a { color: #125eb8; overflow-wrap: anywhere; text-decoration: underline; }
+.rag-sources a { display: block; max-width: 100%; }
+
 /* Sources badge */
 .rag-sources {
     font-size: 10.5px; color: #888; margin-top: 4px; margin-left: 36px;
@@ -31185,7 +31193,7 @@ i[class^="hai-"], i[class*=" hai-"] {
     }
 
     // ── Append message ────────────────────────────────────────
-    function appendMessage(role, text, sources, imageBase64) {
+    function appendMessage(role, text, sources, imageBase64, products) {
         const isUser = (role === 'user');
         const wrapper = document.createElement('div');
         wrapper.className = `rag-msg ${isUser ? 'rag-user' : 'rag-bot'}`;
@@ -31196,13 +31204,62 @@ i[class^="hai-"], i[class*=" hai-"] {
             </div>
         `;
 
-        // Escape HTML an toàn
-        const escaped = escapeHtml(text)
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')  // **bold**
-            .replace(/\n/g, '<br>');
+        // Chỉ định dạng nội dung hiển thị; không thay đổi văn bản gửi API.
+        // Cho phép Markdown cơ bản nhưng vẫn escape HTML do AI trả về.
+        function formatRagAnswer(raw) {
+            const links = [];
+            let plain = String(raw || '')
+                .replace(/\\([*#()[\]])/g, '$1') // bỏ backslash trước ký hiệu Markdown
+                .replace(/\r\n?/g, '\n')
+                .replace(/\[([^\]\n]{1,180})\]\((https?:\/\/[^\s)]+)\)/g, function (_all, label, href) {
+                    try {
+                        const url = new URL(href);
+                        if (!['http:', 'https:'].includes(url.protocol)) return label;
+                        const token = 'RAGLINKTOKEN' + links.length + 'END';
+                        links.push('<a href="' + escapeHtml(url.href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + '</a>');
+                        return token;
+                    } catch (_) { return label; }
+                });
+            let safe = escapeHtml(plain);
+            safe = safe.replace(/\*\*([^\n*]+)\*\*/g, '<strong>$1</strong>');
+            safe = safe.replace(/(^|[^*])\*([^\n*]+)\*(?!\*)/g, '$1<em>$2</em>');
+            safe = safe.replace(/RAGLINKTOKEN(\d+)END/g, function (token, index) {
+                return links[Number(index)] || token;
+            });
+            return safe.split('\n').map(function (line) {
+                const trimmed = line.trim();
+                if (!trimmed) return '<div class="rag-answer-space"></div>';
+                const heading = trimmed.match(/^#{1,4}\s+(.+)$/);
+                if (heading) return '<div class="rag-answer-heading">' + heading[1] + '</div>';
+                const bullet = trimmed.match(/^[-•]\s+(.+)$/);
+                if (bullet) return '<div class="rag-answer-list">• ' + bullet[1] + '</div>';
+                const ordered = trimmed.match(/^(\d{1,2})[.)]\s+(.+)$/);
+                if (ordered) return '<div class="rag-answer-list">' + ordered[1] + '. ' + ordered[2] + '</div>';
+                return '<div class="rag-answer-line">' + line + '</div>';
+            }).join('');
+        }
+        const escaped = formatRagAnswer(text);
 
-        const sourcesHTML = (!isUser && sources && sources.length)
-            ? `<div class="rag-sources"><i class=hai-book></i> Nguồn: ${sources.map(s => `<span>${s}</span>`).join('')}</div>`
+        // Hiển thị từng nguồn thành một liên kết an toàn, không dính URL vào tiêu đề.
+        const sourcesHTML = (!isUser && Array.isArray(sources) && sources.length)
+            ? `<div class="rag-sources" style="display:flex;flex-direction:column;gap:5px;align-items:flex-start;margin-top:6px;">
+                <strong style="font-size:12px;">Nguồn tham khảo:</strong>
+                ${sources.slice(0, 3).map((s, index) => {
+                    const raw = String(s || '').trim();
+                    const found = raw.match(/https?:\/\/[^\s<>\]\)]+/i);
+                    if (!found) return `<span style="font-size:12px;">${escapeHtml(raw)}</span>`;
+                    const url = found[0];
+                    try {
+                        const parsed = new URL(url);
+                        if (!['https:', 'http:'].includes(parsed.protocol)) return '';
+                        const label = raw.slice(0, found.index).replace(/\s*[—–:-]\s*$/, '').trim()
+                            || parsed.hostname;
+                        return `<a href="${escapeHtml(parsed.href)}" target="_blank" rel="noopener noreferrer"
+                            style="font-size:12px;line-height:1.5;overflow-wrap:anywhere;text-decoration:underline;">
+                            ${index + 1}. ${escapeHtml(label)}</a>`;
+                    } catch (e) { return ''; }
+                }).join('')}
+               </div>`
             : '';
             
         const imageHTML = imageBase64 ? `<div style="margin-bottom: 8px;"><img src="data:image/jpeg;base64,${imageBase64}" style="max-width: 100%; border-radius: 8px;"></div>` : '';
@@ -31217,6 +31274,75 @@ i[class^="hai-"], i[class*=" hai-"] {
                 ${sourcesHTML}
             </div>
         `;
+
+        // Thẻ sản phẩm do backend đối chiếu từ database thật; không dùng URL do AI tự sinh.
+        if (!isUser && Array.isArray(products) && products.length) {
+            const validProducts = products.slice(0, 3).filter(function (product) {
+                return product && Number.isInteger(Number(product.id)) && product.name;
+            });
+
+            if (validProducts.length) {
+                const cardsWrap = document.createElement('div');
+                cardsWrap.className = 'rag-product-recommendations';
+                cardsWrap.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px;max-width:100%;';
+
+                const cardsTitle = document.createElement('div');
+                cardsTitle.textContent = 'Sản phẩm trong shop';
+                cardsTitle.style.cssText = 'grid-column:1/-1;font-size:13px;font-weight:700;margin-bottom:2px;';
+                cardsWrap.appendChild(cardsTitle);
+
+                validProducts.forEach(function (product) {
+                    const card = document.createElement('button');
+                    card.type = 'button';
+                    card.className = 'rag-product-card';
+                    card.style.cssText = 'display:flex;flex-direction:column;align-items:stretch;gap:6px;text-align:left;padding:9px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;color:#222;cursor:pointer;min-width:0;font:inherit;';
+
+                    const image = document.createElement('img');
+                    image.alt = product.name;
+                    image.loading = 'lazy';
+                    image.src = product.image_url || 'https://placehold.co/240x160?text=San+pham';
+                    image.onerror = function () {
+                        this.onerror = null;
+                        this.src = 'https://placehold.co/240x160?text=San+pham';
+                    };
+                    image.style.cssText = 'width:100%;height:100px;object-fit:contain;border-radius:6px;background:#fff;';
+
+                    const name = document.createElement('span');
+                    name.textContent = product.name;
+                    name.style.cssText = 'font-size:12px;font-weight:600;line-height:1.4;min-height:34px;';
+
+                    const price = document.createElement('span');
+                    price.textContent = new Intl.NumberFormat('vi-VN').format(Number(product.price) || 0) + ' ₫';
+                    price.style.cssText = 'font-size:13px;font-weight:700;color:#d92332;';
+
+                    const linkLabel = document.createElement('span');
+                    linkLabel.textContent = 'Xem sản phẩm →';
+                    linkLabel.style.cssText = 'font-size:12px;color:#1769aa;font-weight:600;';
+
+                    card.appendChild(image);
+                    card.appendChild(name);
+                    card.appendChild(price);
+                    card.appendChild(linkLabel);
+                    card.addEventListener('click', function () {
+                        if (typeof window.showProductModal === 'function') {
+                            window.showProductModal(
+                                product.name,
+                                Number(product.price) || 0,
+                                product.image_url || 'https://placehold.co/240x160?text=San+pham',
+                                product.description || '',
+                                Number(product.id)
+                            );
+                        } else {
+                            console.warn('[RAG] Không tìm thấy hàm mở chi tiết sản phẩm.');
+                        }
+                    });
+                    cardsWrap.appendChild(card);
+                });
+
+                const bubble = wrapper.querySelector('.rag-bubble');
+                if (bubble) bubble.insertAdjacentElement('afterend', cardsWrap);
+            }
+        }
 
         messagesEl.appendChild(wrapper);
         scrollToBottom();
@@ -31310,7 +31436,7 @@ i[class^="hai-"], i[class*=" hai-"] {
             hideLoading();
             const answer  = data.answer  || 'Xin lỗi, tôi không có câu trả lời lúc này.';
             const sources = data.sources || [];
-            appendMessage('bot', answer, sources);
+            appendMessage('bot', answer, sources, null, data.products || []);
             history.push({ role: 'assistant', content: answer });
         })
         .catch(function (err) {
